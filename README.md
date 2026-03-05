@@ -312,12 +312,343 @@ python src/evaluate.py
 
 ---
 
-## Dicas Finais
+---
 
-- **Lembre-se da importância da especificidade, contexto e persona** ao refatorar prompts
-- **Use Few-shot Learning com 2-3 exemplos claros** para melhorar drasticamente a performance
-- **Chain of Thought (CoT)** é excelente para tarefas que exigem raciocínio complexo (como análise de PRs)
-- **Use o Tracing do LangSmith** como sua principal ferramenta de debug - ele mostra exatamente o que o LLM está "pensando"
-- **Não altere os datasets de avaliação** - apenas os prompts em `prompts/bug_to_user_story_v2.yml`
-- **Itere, itere, itere** - é normal precisar de 3-5 iterações para atingir 0.9 em todas as métricas
-- **Documente seu processo** - a jornada de otimização é tão importante quanto o resultado final
+## Técnicas Aplicadas (Fase 2)
+
+O prompt `bug_to_user_story_v2` aplica **5 técnicas avançadas** de Prompt Engineering, com foco em garantir consistência, completude e critérios de aceitação acionáveis.
+
+---
+
+### 1. Role Prompting
+
+**O que é:** Define uma persona específica e contextualizada para o LLM, condicionando o tom, o nível de detalhamento e a perspectiva das respostas.
+
+**Por que escolhi:** O prompt v1 não definia papel algum, gerando respostas genéricas e sem consistência de tom. Ao definir um PM Sênior e Scrum Master certificado, o modelo adota naturalmente linguagem empática, foco no valor de negócio e estrutura ágil.
+
+**Como apliquei no prompt:**
+```yaml
+system_prompt: |
+  Você é um Product Manager Sênior e Scrum Master certificado com mais de 10 anos
+  de experiência em desenvolvimento ágil. Você é reconhecido pela sua capacidade
+  excepcional de transformar relatos técnicos de bugs em User Stories perfeitamente
+  estruturadas, claras, empáticas e completas...
+```
+
+**Impacto direto:** Tone Score — garante tom profissional e empático em todas as respostas.
+
+---
+
+### 2. Few-shot Learning
+
+**O que é:** Fornece exemplos completos de entrada → saída dentro do prompt, demonstrando o padrão esperado para cada nível de complexidade.
+
+**Por que escolhi:** É a técnica com maior impacto em tarefas de transformação de formato. O modelo aprende por demonstração o que "correto" significa, eliminando ambiguidades impossíveis de cobrir apenas com regras.
+
+**Como apliquei:** 3 exemplos cobrindo todos os níveis de complexidade, cada um com inventário explícito de dados (Passo 1):
+
+- **Exemplo 1 — Bug simples:** botão "Adicionar ao Carrinho" com ID do produto → User Story com critérios de sucesso + bloco de erro separado
+- **Exemplo 2 — Bug médio:** relatório de vendas com timeout de 120s, 1000+ registros, coluna sem índice → User Story + Contexto Técnico com 5 campos
+- **Exemplo 3 — Bug complexo:** checkout com 4 falhas críticas (XSS, Gateway 504 em 30%, race condition em cupom PROMO10, loading infinito), 150+ clientes afetados, R$ 15.000 em perdas → User Story com 4 seções A/B/C/D, Critérios Técnicos, Contexto do Bug e Tasks Sugeridas
+
+**Impacto direto:** Acceptance Criteria Score e User Story Format Score — o modelo aprende o padrão correto por imitação.
+
+---
+
+### 3. Chain of Thought (CoT)
+
+**O que é:** Instrui o modelo a executar um processo mental estruturado **antes** de escrever qualquer linha da resposta, dividindo a tarefa em etapas sequenciais.
+
+**Por que escolhi:** Bugs complexos com múltiplos problemas eram tratados superficialmente no v1. Com CoT, o modelo é forçado a catalogar todos os dados antes de escrever, garantindo que nada seja esquecido.
+
+**Como apliquei — 4 passos obrigatórios:**
+
+```
+PASSO 1 — INVENTÁRIO DE DADOS (execute PRIMEIRO):
+  Extraia e liste cada número, percentual, endpoint, código HTTP,
+  log, nome de sistema e impacto de negócio do bug report.
+  Guarde para conferir no Passo 4.
+
+PASSO 2 — CLASSIFICAÇÃO:
+  Complexidade (simples/médio/complexo), persona afetada, valor real.
+
+PASSO 3 — ESCREVA A USER STORY:
+  Use o template correspondente à complexidade identificada.
+
+PASSO 4 — CHECKLIST DE SAÍDA (8 itens obrigatórios):
+  1. Cada número do inventário aparece com valor EXATO?
+  2. Endpoints preservados no Contexto Técnico?
+  3. Existe bloco de ERRO separado (Dado/Quando/Então)?
+  4. Persona tem 2+ palavras de contexto?
+  5. "Para que" expressa benefício real?
+  6. Todos os problemas cobertos?
+  7. Contexto Técnico com estado atual, esperado e sugestão?
+  8. Tasks Técnicas Sugeridas cobrem cada área impactada?
+```
+
+**Impacto direto:** Completeness Score — nenhum dado numérico ou técnico é omitido.
+
+---
+
+### 4. Skeleton of Thought
+
+**O que é:** Define templates obrigatórios de saída para cada nível de complexidade, funcionando como esqueleto estrutural que o modelo deve preencher.
+
+**Por que escolhi:** Garante consistência de formato independente do bug analisado. Sem um skeleton explícito, o modelo tende a variar a estrutura de resposta entre execuções.
+
+**Como apliquei — 3 templates distintos:**
+
+- **Formato Simples:** User Story + Critérios de Aceitação (com bloco de erro obrigatório)
+- **Formato Médio:** User Story + Critérios de Aceitação + Contexto Técnico (5 campos nomeados)
+- **Formato Complexo:** USER STORY PRINCIPAL + CRITÉRIOS DE ACEITAÇÃO (seções A/B/C por problema) + CRITÉRIOS TÉCNICOS + CONTEXTO DO BUG + TASKS TÉCNICAS SUGERIDAS
+
+Cada template inclui **explicitamente** o bloco de cenário de ERRO como parte da estrutura, não apenas como regra textual.
+
+**Impacto direto:** User Story Format Score — estrutura consistente em 100% das respostas.
+
+---
+
+### 5. Self-Consistency Check (Checklist de Verificação)
+
+**O que é:** Instrui o modelo a realizar uma auto-revisão contra um checklist de 8 itens antes de finalizar a resposta, corrigindo omissões antes de entregar.
+
+**Por que escolhi:** Mesmo com CoT e Skeleton, o modelo ocasionalmente omite dados numéricos específicos do bug (percentuais, valores financeiros, IDs). O checklist força uma segunda passagem de verificação.
+
+**Como apliquei:** O Passo 4 do CoT **é** o checklist — a mesma instrução que estrutura o raciocínio também serve como mecanismo de verificação final. O modelo é instruído: "Se algum item não estiver presente, corrija ANTES de finalizar."
+
+**Impacto direto:** Completeness Score e Acceptance Criteria Score — reduz omissões residuais.
+
+---
+
+## Resultados Finais
+
+### Links Públicos
+
+| Recurso | Link |
+|---------|------|
+| Dashboard LangSmith | [prompt-optimization-challenge-resolved](https://smith.langchain.com/o/428b36f7-d33c-41f9-84e6-f5457fe9dca1/dashboards/projects/aacd76b5-a19f-438e-a90c-0cd8f19a7982) |
+| Prompt v2 Publicado (público) | [prompt-public/bug_to_user_story_v2](https://smith.langchain.com/hub/prompt-public/bug_to_user_story_v2) |
+
+---
+
+### Screenshots das Avaliações
+
+#### Resultado Final — Todas as métricas >= 0.9
+
+![Resultado da avaliação final](screenshot/result.png)
+
+#### Dataset de Avaliação
+
+![Dataset de avaliação no LangSmith](screenshot/dataset.png)
+
+#### Tracing Detalhado de Exemplos
+
+![Tracing detalhado de exemplos](screenshot/tracing.png)
+
+#### Monitoring do Projeto
+
+![Monitoring do projeto LangSmith](screenshot/monitoring.png)
+
+#### Playground — Teste do Prompt
+
+![Playground do prompt v2](screenshot/playground.png)
+
+---
+
+### Tabela Comparativa: v1 vs v2
+
+| Métrica | v1 — `leonanluppi/bug_to_user_story_v1` | v2 — `prompt-public/bug_to_user_story_v2` | Melhoria | Técnica responsável |
+|---------|----------------------------------------|-------------------------------------------|----------|---------------------|
+| **Tone Score** | ~0.45 | ≥ 0.91 | +~0.46 | Role Prompting |
+| **Acceptance Criteria Score** | ~0.35 | ≥ 0.90 | +~0.55 | Few-shot Learning + Self-Consistency |
+| **User Story Format Score** | ~0.50 | ≥ 0.91 | +~0.41 | Skeleton of Thought |
+| **Completeness Score** | ~0.40 | ≥ 0.90 | +~0.50 | Chain of Thought (CoT) |
+| **Média Geral** | ~0.43 | ≥ 0.90 | +~0.47 | Todas as 5 técnicas combinadas |
+| **Status** | ❌ REPROVADO | ✅ APROVADO | — | — |
+
+#### O que havia no v1 (prompt fraco)
+
+```
+Prompt: "Transform the following bug report into a user story."
+Input:  {bug_report}
+
+Problemas identificados:
+- Sem persona → tom inconsistente, sem empatia
+- Sem exemplos → formato de saída imprevisível
+- Sem processo → dados técnicos do bug ignorados
+- Sem template → estrutura varia entre execuções
+- Sem verificação → omissões frequentes de dados numéricos
+```
+
+#### O que foi adicionado no v2 (prompt otimizado)
+
+```
+[ROLE PROMPTING]       PM Sênior + Scrum Master certificado
+                       → tone score consistente >= 0.9
+
+[CHAIN OF THOUGHT]     4 passos: inventário de dados PRIMEIRO,
+                       classificação, escrita, checklist final
+                       → completeness score >= 0.9
+
+[SKELETON OF THOUGHT]  3 templates obrigatórios por complexidade
+                       com bloco de erro explícito em cada um
+                       → user story format score >= 0.9
+
+[FEW-SHOT LEARNING]    3 exemplos completos com inventário de dados
+                       demonstrando o padrão esperado
+                       → acceptance criteria score >= 0.9
+
+[SELF-CONSISTENCY]     Checklist de 8 itens obrigatório antes de entregar
+                       → reduz omissões residuais em todas as métricas
+```
+
+---
+
+### Dataset de Avaliação
+
+- **Total de exemplos:** 15 bugs (5 simples, 7 médios, 3 complexos)
+- **Ambiente:** LangSmith Project `prompt-optimization-challenge-resolved`
+- **Execuções rastreadas:** disponíveis no [dashboard do LangSmith](https://smith.langchain.com/o/428b36f7-d33c-41f9-84e6-f5457fe9dca1/dashboards/projects/aacd76b5-a19f-438e-a90c-0cd8f19a7982)
+
+---
+
+## Como Executar
+
+### Pré-requisitos
+
+- Python 3.9+
+- API Key do **OpenAI** (recomendado) ou **Google Gemini**
+  - OpenAI: https://platform.openai.com/api-keys
+  - Google: https://aistudio.google.com/app/apikey
+- API Key do **LangSmith**: https://smith.langchain.com/settings/keys
+- Username do **LangSmith Hub** (obtido ao publicar qualquer prompt público)
+
+---
+
+### Fase 1: Configuração do Ambiente
+
+```bash
+# 1. Clonar o repositório
+git clone <seu-repositorio>
+cd mba-ia-pull-evaluation-prompt
+
+# 2. Criar e ativar ambiente virtual
+python3 -m venv venv
+source venv/bin/activate  # Windows: venv\Scripts\activate
+
+# 3. Instalar dependências
+pip install -r requirements.txt
+
+# 4. Configurar credenciais
+cp .env.example .env
+```
+
+**Conteúdo do `.env`:**
+```env
+# LangSmith
+LANGSMITH_TRACING=true
+LANGSMITH_ENDPOINT=https://api.smith.langchain.com
+LANGSMITH_API_KEY=lsv2_seu_api_key_aqui
+LANGSMITH_PROJECT=prompt-optimization-challenge-resolved
+USERNAME_LANGSMITH_HUB=seu_username_aqui
+
+# OpenAI (recomendado)
+OPENAI_API_KEY=sk-proj-seu_api_key_aqui
+LLM_PROVIDER=openai
+LLM_MODEL=gpt-4o-mini    # modelo para gerar user stories
+EVAL_MODEL=gpt-4o         # modelo para avaliar as métricas
+
+# Alternativa: Google Gemini (gratuito)
+# GOOGLE_API_KEY=AIzaSy_seu_api_key_aqui
+# LLM_PROVIDER=google
+# LLM_MODEL=gemini-2.5-flash
+# EVAL_MODEL=gemini-2.5-flash
+```
+
+---
+
+### Fase 2: Pipeline de Otimização
+
+#### Passo 1 — Pull do prompt inicial
+
+```bash
+python src/pull_prompts.py
+# Baixa leonanluppi/bug_to_user_story_v1 do LangSmith Hub
+# Salva em prompts/bug_to_user_story_v1.yml
+```
+
+#### Passo 2 — Editar o prompt otimizado
+
+```bash
+# Editar prompts/bug_to_user_story_v2.yml com as técnicas avançadas
+# O arquivo já está implementado com as 5 técnicas descritas acima
+```
+
+#### Passo 3 — Push do prompt otimizado
+
+```bash
+python src/push_prompts.py
+# Valida o prompt (estrutura, técnicas, ausência de TODOs)
+# Publica como PÚBLICO em: {USERNAME}/bug_to_user_story_v2
+```
+
+#### Passo 4 — Avaliação com 4 métricas
+
+```bash
+python src/evaluate.py
+# Executa o prompt contra o dataset de 15 exemplos
+# Calcula: Tone, Acceptance Criteria, User Story Format, Completeness
+# Exibe status: APROVADO se todas as 4 métricas >= 0.9
+```
+
+#### Passo 5 — Testes de validação estrutural
+
+```bash
+pytest tests/test_prompts.py -v
+
+# Resultado esperado:
+# PASSED test_prompt_has_system_prompt
+# PASSED test_prompt_has_role_definition
+# PASSED test_prompt_mentions_format
+# PASSED test_prompt_has_few_shot_examples
+# PASSED test_prompt_no_todos
+# PASSED test_minimum_techniques
+# ===== 6 passed =====
+```
+
+---
+
+### Resumo de Comandos
+
+```bash
+# Setup
+python3 -m venv venv && source venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env   # preencher com suas credenciais
+
+# Pipeline principal
+python src/pull_prompts.py       # baixar prompt v1
+python src/push_prompts.py       # publicar prompt v2 otimizado
+python src/evaluate.py           # avaliar com 4 métricas
+pytest tests/test_prompts.py -v  # validar estrutura do prompt
+```
+
+---
+
+### Ciclo de Iteração (se alguma métrica < 0.9)
+
+```bash
+# 1. Identificar qual métrica falhou no output de evaluate.py
+# 2. Editar prompts/bug_to_user_story_v2.yml
+# 3. Push e avaliar novamente
+python src/push_prompts.py
+python src/evaluate.py
+# Repetir até TODAS as 4 métricas >= 0.9
+```
+
+| Métrica com problema | O que ajustar no prompt |
+|---------------------|------------------------|
+| Tone Score baixo | Fortalecer persona do Role Prompting; aprimorar "para que" com valor real |
+| Acceptance Criteria baixo | Adicionar exemplos Given-When-Then mais específicos; incluir cenário de erro |
+| User Story Format baixo | Reforçar template "Como um... eu quero... para que..." nos exemplos |
+| Completeness baixo | Fortalecer o inventário de dados (Passo 1) e o checklist final (Passo 4) |
